@@ -1,0 +1,690 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Mushroom Toxicity Classifier</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet"/>
+
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:       #f5f2ed;
+      --surface:  #ffffff;
+      --border:   #e2ddd6;
+      --text:     #1a1a18;
+      --muted:    #8a8478;
+      --green:    #2d6a4f;
+      --red:      #9b2226;
+      --accent:   #40916c;
+      --amber:    #b45309;
+      --amber-lt: #fef3c7;
+      --blue:     #1d4ed8;
+      --blue-lt:  #eff6ff;
+      --radius:   12px;
+    }
+
+    body {
+      background: var(--bg);
+      font-family: 'DM Sans', sans-serif;
+      color: var(--text);
+      min-height: 100vh;
+      padding: 40px 20px 80px;
+    }
+
+    .wrapper { max-width: 760px; margin: 0 auto; }
+
+    /* ── Header ── */
+    header { text-align: center; margin-bottom: 48px; }
+    .mushroom-icon {
+      font-size: 52px; display: block; margin-bottom: 12px;
+      animation: float 3s ease-in-out infinite;
+    }
+    @keyframes float {
+      0%,100% { transform: translateY(0); }
+      50%     { transform: translateY(-6px); }
+    }
+    h1 {
+      font-family: 'DM Serif Display', serif;
+      font-size: 2.2rem; font-weight: 400;
+      letter-spacing: -0.5px; margin-bottom: 8px;
+    }
+    .subtitle { color: var(--muted); font-size: 0.95rem; font-weight: 300; }
+    .dataset-badge {
+      display: inline-block;
+      margin-top: 10px;
+      background: var(--green);
+      color: #fff;
+      font-size: 0.72rem;
+      font-weight: 500;
+      padding: 4px 12px;
+      border-radius: 99px;
+      letter-spacing: 0.5px;
+    }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 28px 32px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 0.72rem; font-weight: 500;
+      color: var(--muted); text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 20px;
+    }
+
+    /* ── Photo upload ── */
+    .upload-zone {
+      border: 2px dashed var(--border);
+      border-radius: 10px;
+      padding: 32px 20px;
+      text-align: center;
+      cursor: pointer;
+      transition: border-color 0.2s, background 0.2s;
+      position: relative;
+    }
+    .upload-zone:hover, .upload-zone.drag-over {
+      border-color: var(--accent); background: #f0faf5;
+    }
+    .upload-zone input[type="file"] {
+      position: absolute; inset: 0; opacity: 0; cursor: pointer; width: 100%;
+    }
+    .upload-icon { font-size: 1.8rem; display: block; margin-bottom: 8px; }
+    .upload-text { font-size: 0.88rem; color: var(--muted); }
+    .upload-text strong { color: var(--accent); font-weight: 500; }
+
+    #photo-preview-wrap { display: none; margin-top: 14px; }
+    #photo-preview {
+      width: 100%; max-height: 240px; object-fit: cover;
+      border-radius: 8px; display: block;
+    }
+    .preview-name { font-size: 0.76rem; color: var(--muted); margin-top: 5px; text-align: center; }
+
+    #analyze-btn {
+      display: none; width: 100%; margin-top: 14px;
+      background: var(--accent); color: #fff;
+      border: none; border-radius: 8px;
+      padding: 11px; font-size: 0.9rem;
+      font-family: 'DM Sans', sans-serif; font-weight: 500;
+      cursor: pointer; transition: background 0.15s, transform 0.1s;
+    }
+    #analyze-btn:hover   { background: #2d6a4f; }
+    #analyze-btn:active  { transform: scale(0.98); }
+    #analyze-btn:disabled { background: #b0a99e; cursor: not-allowed; }
+
+    .gemini-disabled {
+      background: var(--amber-lt);
+      border: 1px solid #fcd34d;
+      border-radius: 8px;
+      padding: 12px 16px;
+      font-size: 0.82rem;
+      color: var(--amber);
+      line-height: 1.7;
+    }
+    .gemini-disabled code {
+      background: rgba(0,0,0,0.07);
+      padding: 1px 5px; border-radius: 4px; font-size: 0.78rem;
+    }
+
+    /* ── AI banner & note ── */
+    #ai-banner {
+      display: none;
+      background: var(--blue-lt);
+      border: 1px solid #bfdbfe;
+      border-radius: 8px;
+      padding: 11px 14px;
+      margin-bottom: 18px;
+      font-size: 0.83rem;
+      color: var(--blue);
+      line-height: 1.6;
+    }
+    #analysis-note-wrap {
+      display: none;
+      background: #f8f9fa;
+      border-left: 3px solid var(--accent);
+      padding: 9px 14px;
+      border-radius: 0 6px 6px 0;
+      margin-bottom: 18px;
+      font-size: 0.81rem;
+      color: var(--muted);
+      font-style: italic;
+    }
+
+    /* ── Numeric sliders ── */
+    .numeric-section {
+      margin-bottom: 24px;
+      padding-bottom: 20px;
+      border-bottom: 1px solid var(--border);
+    }
+    .numeric-section-label {
+      font-size: 0.7rem; font-weight: 500;
+      color: var(--muted); text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 14px;
+    }
+    .numeric-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr 1fr;
+      gap: 16px;
+    }
+    @media (max-width: 580px) { .numeric-grid { grid-template-columns: 1fr; } }
+
+    .numeric-field { display: flex; flex-direction: column; gap: 6px; }
+    .num-label-row {
+      display: flex; justify-content: space-between; align-items: baseline;
+    }
+    .num-label {
+      font-size: 0.76rem; font-weight: 500;
+      color: var(--muted); text-transform: capitalize;
+    }
+    .num-value {
+      font-size: 0.84rem; font-weight: 500;
+      color: var(--text); min-width: 52px; text-align: right;
+    }
+    input[type="range"] {
+      width: 100%; height: 5px;
+      -webkit-appearance: none;
+      background: var(--border);
+      border-radius: 99px;
+      outline: none;
+      cursor: pointer;
+    }
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      width: 16px; height: 16px;
+      background: var(--accent);
+      border-radius: 50%;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    input[type="range"]::-webkit-slider-thumb:hover { background: var(--green); }
+    input[type="range"].ai-filled::-webkit-slider-thumb { background: var(--blue); }
+
+    /* ── Categorical dropdowns ── */
+    .cat-section-label {
+      font-size: 0.7rem; font-weight: 500;
+      color: var(--muted); text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    @media (max-width: 520px) { .grid { grid-template-columns: 1fr; } }
+
+    .field { display: flex; flex-direction: column; gap: 5px; }
+    label {
+      font-size: 0.76rem; font-weight: 500;
+      color: var(--muted); text-transform: capitalize; letter-spacing: 0.2px;
+    }
+    select {
+      appearance: none;
+      background: var(--bg) url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath d='M1 1l5 5 5-5' stroke='%238a8478' stroke-width='1.5' fill='none' stroke-linecap='round'/%3E%3C/svg%3E") no-repeat right 12px center;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px 32px 8px 11px;
+      font-size: 0.86rem;
+      font-family: 'DM Sans', sans-serif;
+      color: var(--text);
+      cursor: pointer;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    select:focus  { outline: none; border-color: var(--accent); }
+    select:hover  { border-color: #b0a99e; }
+    select.ai-filled {
+      border-color: var(--blue);
+      background-color: #f0f6ff;
+    }
+
+    /* ── Predict button ── */
+    .btn-wrap { margin-top: 26px; text-align: center; }
+    #predict-btn {
+      background: var(--green); color: #fff;
+      border: none; border-radius: 8px;
+      padding: 13px 52px;
+      font-size: 0.95rem; font-family: 'DM Sans', sans-serif;
+      font-weight: 500; cursor: pointer;
+      letter-spacing: 0.3px;
+      transition: background 0.15s, transform 0.1s;
+    }
+    #predict-btn:hover   { background: #245c43; }
+    #predict-btn:active  { transform: scale(0.98); }
+    #predict-btn:disabled { background: #b0a99e; cursor: not-allowed; }
+
+    /* ── Result card ── */
+    #result { display: none; animation: slideUp 0.3s ease; }
+    @keyframes slideUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .result-top { display: flex; align-items: center; gap: 16px; margin-bottom: 22px; }
+    .result-icon   { font-size: 2.8rem; flex-shrink: 0; }
+    .result-label  {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.9rem; font-weight: 400; line-height: 1.1;
+    }
+    .result-sub    { font-size: 0.84rem; color: var(--muted); margin-top: 4px; }
+
+    .conf-row {
+      display: flex; justify-content: space-between;
+      align-items: baseline; margin-bottom: 7px;
+    }
+    .conf-label { font-size: 0.78rem; color: var(--muted); font-weight: 500; }
+    .conf-value { font-family: 'DM Serif Display', serif; font-size: 1.6rem; }
+
+    .bar-track {
+      background: var(--border); border-radius: 99px;
+      height: 8px; overflow: hidden; margin-bottom: 18px;
+    }
+    .bar-fill {
+      height: 100%; border-radius: 99px;
+      transition: width 0.6s cubic-bezier(0.4,0,0.2,1); width: 0%;
+    }
+
+    .prob-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .prob-cell {
+      background: var(--bg); border-radius: 8px;
+      padding: 13px 15px; border: 1px solid var(--border);
+    }
+    .prob-cell-label { font-size: 0.73rem; color: var(--muted); font-weight: 500; margin-bottom: 4px; }
+    .prob-cell-value { font-family: 'DM Serif Display', serif; font-size: 1.3rem; }
+
+    /* ── Species panel ── */
+    #species-panel {
+      display: none;
+      margin-top: 18px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+    }
+    .species-label {
+      font-size: 0.7rem; font-weight: 500;
+      color: var(--muted); text-transform: uppercase;
+      letter-spacing: 1px; margin-bottom: 6px;
+    }
+    .species-name {
+      font-family: 'DM Serif Display', serif;
+      font-size: 1.2rem; color: var(--text); margin-bottom: 4px;
+    }
+    .species-conf-row { font-size: 0.77rem; color: var(--muted); }
+    .species-conf-row span {
+      display: inline-block; padding: 2px 8px;
+      border-radius: 99px; font-weight: 500; font-size: 0.7rem;
+    }
+    .conf-high   { background: #d1fae5; color: #065f46; }
+    .conf-medium { background: #fef3c7; color: #92400e; }
+    .conf-low    { background: #fee2e2; color: #991b1b; }
+
+    /* States */
+    .state-edible    { border-left: 4px solid var(--green); }
+    .state-poisonous { border-left: 4px solid var(--red);   }
+    .color-edible    { color: var(--green); }
+    .color-poisonous { color: var(--red);   }
+    .fill-edible     { background: var(--green); }
+    .fill-poisonous  { background: var(--red);   }
+
+    /* ── Disclaimer ── */
+    .disclaimer {
+      text-align: center; font-size: 0.77rem;
+      color: var(--muted); margin-top: 30px; line-height: 1.7;
+    }
+
+    /* ── Spinner ── */
+    .spinner {
+      display: inline-block; width: 15px; height: 15px;
+      border: 2px solid rgba(255,255,255,0.4);
+      border-top-color: #fff; border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      vertical-align: middle; margin-right: 7px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div class="wrapper">
+
+  <!-- Header -->
+  <header>
+    <span class="mushroom-icon">🍄</span>
+    <h1>Mushroom Classifier</h1>
+    <p class="subtitle">Upload a photo or describe a mushroom — get an edibility prediction</p>
+    <span class="dataset-badge">2023 Secondary Dataset · 173 Species · 61,069 Samples</span>
+  </header>
+
+  <!-- Step 1: Photo -->
+  <div class="card">
+    <p class="card-title">Step 1 — Upload a Photo (optional)</p>
+
+    {% if gemini_enabled %}
+      <div class="upload-zone" id="upload-zone">
+        <input type="file" id="photo-input" accept="image/*" onchange="onPhotoSelected(event)"/>
+        <span class="upload-icon">📷</span>
+        <p class="upload-text">
+          <strong>Click to upload</strong> or drag &amp; drop a mushroom photo<br>
+          JPG, PNG, WEBP accepted
+        </p>
+      </div>
+      <div id="photo-preview-wrap">
+        <img id="photo-preview" src="" alt="Preview"/>
+        <p class="preview-name" id="photo-filename"></p>
+      </div>
+      <button id="analyze-btn" onclick="analyzePhoto()">
+        🔍 Analyze with Gemini AI
+      </button>
+    {% else %}
+      <div class="gemini-disabled">
+        <strong>Photo analysis is disabled</strong> — Gemini API key not found.<br>
+        Get a free key at
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color:var(--amber)">
+          aistudio.google.com
+        </a>
+        then restart with:<br>
+        <code>copy .env.example .env</code> then add your key to <code>.env</code><br>
+        <code>export GEMINI_API_KEY=your_key_here</code> &nbsp;(Mac/Linux)<br>
+        <code>$env:GEMINI_API_KEY="your_key_here"</code> &nbsp;(PowerShell)<br>
+        <code>set GEMINI_API_KEY=your_key_here</code> &nbsp;(Command Prompt)<br><br>
+        You can still fill all fields manually below.
+      </div>
+    {% endif %}
+  </div>
+
+  <!-- Step 2: Features -->
+  <div class="card">
+    <p class="card-title">Step 2 — Review &amp; Edit Features</p>
+
+    <div id="ai-banner">
+      ✨ <strong>AI filled all fields</strong> from your photo — highlighted in blue.
+      Please review each value and correct anything that looks wrong before predicting.
+    </div>
+    <div id="analysis-note-wrap">
+      <span id="analysis-note-text"></span>
+    </div>
+
+    <!-- Numeric measurements (sliders) -->
+    <div class="numeric-section">
+      <p class="numeric-section-label">Measurements</p>
+      <div class="numeric-grid">
+        {% for col, cfg in numeric_ranges.items() %}
+        <div class="numeric-field">
+          <div class="num-label-row">
+            <span class="num-label">{{ col.replace('-', ' ') }}</span>
+            <span class="num-value" id="val-{{ col }}">{{ cfg.default }} {{ cfg.unit }}</span>
+          </div>
+          <input
+            type="range"
+            id="{{ col }}"
+            name="{{ col }}"
+            min="{{ cfg.min }}"
+            max="{{ cfg.max }}"
+            step="{{ cfg.step }}"
+            value="{{ cfg.default }}"
+            oninput="updateSliderLabel('{{ col }}', '{{ cfg.unit }}')"
+          />
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+
+    <!-- Categorical dropdowns -->
+    <p class="cat-section-label">Visual &amp; Environmental Features</p>
+    <div class="grid" id="features-grid">
+      {% for feature, options in features.items() %}
+      <div class="field">
+        <label for="{{ feature }}">{{ feature.replace('-', ' ') }}</label>
+        <select id="{{ feature }}" name="{{ feature }}">
+          {% for code, label in options.items() %}
+          <option value="{{ code }}">{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      {% endfor %}
+    </div>
+
+    <div class="btn-wrap">
+      <button id="predict-btn" onclick="predict()">
+        Predict Edibility
+      </button>
+    </div>
+  </div>
+
+  <!-- Step 3: Result -->
+  <div class="card" id="result">
+    <p class="card-title">Prediction Result</p>
+
+    <div class="result-top">
+      <span class="result-icon" id="result-icon"></span>
+      <div>
+        <div class="result-label" id="result-label"></div>
+        <div class="result-sub"   id="result-sub"></div>
+      </div>
+    </div>
+
+    <div class="conf-row">
+      <span class="conf-label">CONFIDENCE</span>
+      <span class="conf-value" id="conf-value"></span>
+    </div>
+    <div class="bar-track">
+      <div class="bar-fill" id="conf-bar"></div>
+    </div>
+
+    <div class="prob-grid">
+      <div class="prob-cell">
+        <div class="prob-cell-label">P(EDIBLE)</div>
+        <div class="prob-cell-value color-edible" id="p-edible"></div>
+      </div>
+      <div class="prob-cell">
+        <div class="prob-cell-label">P(POISONOUS)</div>
+        <div class="prob-cell-value color-poisonous" id="p-poisonous"></div>
+      </div>
+    </div>
+
+    <div id="species-panel">
+      <div class="species-label">Likely Species (AI estimate)</div>
+      <div class="species-name" id="species-name"></div>
+      <div class="species-conf-row">
+        AI confidence: <span id="species-conf-badge"></span>
+        &nbsp;·&nbsp;<em>Not a trained prediction — Gemini's visual estimate only.</em>
+      </div>
+    </div>
+  </div>
+
+  <p class="disclaimer">
+    ⚠️ This tool is for <strong>educational purposes only</strong>.<br>
+    Trained on 173 simulated species — real-world mushrooms are far more complex.<br>
+    Never use any software to make foraging decisions.
+  </p>
+
+</div>
+
+<script>
+  let selectedFile = null;
+  let speciesData  = null;
+
+  // ── Slider labels ───────────────────────────────────────────
+  function updateSliderLabel(colId, unit) {
+    const slider = document.getElementById(colId);
+    const label  = document.getElementById('val-' + colId);
+    if (slider && label) label.textContent = slider.value + ' ' + unit;
+  }
+
+  // ── Photo selection ─────────────────────────────────────────
+  function onPhotoSelected(event) {
+    const file = event.target.files[0];
+    if (!file) return;
+    selectedFile = file;
+
+    const reader = new FileReader();
+    reader.onload = e => {
+      document.getElementById('photo-preview').src      = e.target.result;
+      document.getElementById('photo-filename').textContent = file.name;
+      document.getElementById('photo-preview-wrap').style.display = 'block';
+      document.getElementById('analyze-btn').style.display        = 'block';
+    };
+    reader.readAsDataURL(file);
+    clearAiFill();
+  }
+
+  // Drag-and-drop
+  const zone = document.getElementById('upload-zone');
+  if (zone) {
+    zone.addEventListener('dragover',  e => { e.preventDefault(); zone.classList.add('drag-over'); });
+    zone.addEventListener('dragleave', () => zone.classList.remove('drag-over'));
+    zone.addEventListener('drop', e => {
+      e.preventDefault();
+      zone.classList.remove('drag-over');
+      const file = e.dataTransfer.files[0];
+      if (file && file.type.startsWith('image/')) {
+        const dt = new DataTransfer(); dt.items.add(file);
+        document.getElementById('photo-input').files = dt.files;
+        onPhotoSelected({ target: { files: [file] } });
+      }
+    });
+  }
+
+  // ── Analyze photo ───────────────────────────────────────────
+  async function analyzePhoto() {
+    if (!selectedFile) return;
+    const btn     = document.getElementById('analyze-btn');
+    btn.disabled  = true;
+    btn.innerHTML = '<span class="spinner"></span>Analyzing with AI…';
+
+    try {
+      const formData = new FormData();
+      formData.append('photo', selectedFile);
+
+      const res  = await fetch('/analyze-photo', { method: 'POST', body: formData });
+      const json = await res.json();
+      if (json.error) { alert('Analysis error: ' + json.error); return; }
+
+      fillAllFields(json.features);
+
+      speciesData = { species: json.species, confidence: json.species_confidence };
+
+      document.getElementById('ai-banner').style.display = 'block';
+      if (json.analysis_note) {
+        document.getElementById('analysis-note-text').textContent = '💬 ' + json.analysis_note;
+        document.getElementById('analysis-note-wrap').style.display = 'block';
+      }
+
+    } catch (e) {
+      alert('Could not reach server: ' + e.message);
+    } finally {
+      btn.disabled  = false;
+      btn.innerHTML = '🔍 Re-analyze Photo';
+    }
+  }
+
+  function fillAllFields(features) {
+    // Clear previous highlights
+    document.querySelectorAll('select.ai-filled, input.ai-filled')
+      .forEach(el => el.classList.remove('ai-filled'));
+
+    Object.entries(features).forEach(([name, val]) => {
+      const el = document.getElementById(name);
+      if (!el) return;
+
+      if (el.tagName === 'SELECT') {
+        el.value = val;
+        if (el.value == val) el.classList.add('ai-filled');
+      } else if (el.type === 'range') {
+        const unit = el.closest('.numeric-field')
+          ?.querySelector('.num-value')?.textContent.split(' ').pop() || '';
+        el.value = val;
+        const label = document.getElementById('val-' + name);
+        if (label) label.textContent = val + ' ' + unit;
+        el.classList.add('ai-filled');
+      }
+    });
+  }
+
+  function clearAiFill() {
+    document.querySelectorAll('.ai-filled').forEach(el => el.classList.remove('ai-filled'));
+    document.getElementById('ai-banner').style.display          = 'none';
+    document.getElementById('analysis-note-wrap').style.display = 'none';
+    speciesData = null;
+  }
+
+  // ── Predict ─────────────────────────────────────────────────
+  async function predict() {
+    const btn = document.getElementById('predict-btn');
+
+    // Collect numeric slider values
+    const data = {};
+    document.querySelectorAll('.numeric-grid input[type="range"]').forEach(s => {
+      data[s.name] = parseFloat(s.value);
+    });
+
+    // Collect categorical dropdown values
+    document.querySelectorAll('#features-grid select').forEach(s => {
+      data[s.name] = s.value;
+    });
+
+    btn.disabled  = true;
+    btn.innerHTML = '<span class="spinner"></span>Predicting…';
+
+    try {
+      const res  = await fetch('/predict', {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify(data),
+      });
+      const json = await res.json();
+      if (json.error) { alert('Error: ' + json.error); return; }
+      showResult(json);
+    } catch (e) {
+      alert('Could not reach the server. Is app.py running?');
+    } finally {
+      btn.disabled  = false;
+      btn.innerHTML = 'Predict Edibility';
+    }
+  }
+
+  // ── Show result ─────────────────────────────────────────────
+  function showResult({ prediction, confidence, p_edible, p_poisonous }) {
+    const isPoison = prediction === 'Poisonous';
+
+    document.getElementById('result-icon').textContent  = isPoison ? '☠️' : '✅';
+    document.getElementById('result-label').textContent = prediction;
+    document.getElementById('result-label').className   =
+      'result-label ' + (isPoison ? 'color-poisonous' : 'color-edible');
+    document.getElementById('result-sub').textContent   =
+      isPoison ? 'Do not consume this mushroom.' : 'This mushroom appears safe to eat.';
+
+    document.getElementById('conf-value').textContent = confidence.toFixed(1) + '%';
+    const bar = document.getElementById('conf-bar');
+    bar.className   = 'bar-fill ' + (isPoison ? 'fill-poisonous' : 'fill-edible');
+    bar.style.width = '0%';
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      bar.style.width = confidence + '%';
+    }));
+
+    document.getElementById('p-edible').textContent    = p_edible.toFixed(1)    + '%';
+    document.getElementById('p-poisonous').textContent = p_poisonous.toFixed(1) + '%';
+
+    const card = document.getElementById('result');
+    card.className = 'card ' + (isPoison ? 'state-poisonous' : 'state-edible');
+
+    const speciesPanel = document.getElementById('species-panel');
+    if (speciesData) {
+      document.getElementById('species-name').textContent = speciesData.species;
+      const badge  = document.getElementById('species-conf-badge');
+      badge.textContent = speciesData.confidence;
+      badge.className   = { high:'conf-high', medium:'conf-medium', low:'conf-low' }
+        [speciesData.confidence] || 'conf-low';
+      speciesPanel.style.display = 'block';
+    } else {
+      speciesPanel.style.display = 'none';
+    }
+
+    card.style.display = 'block';
+    card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+</script>
+</body>
+</html>
