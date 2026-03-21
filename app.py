@@ -67,15 +67,14 @@ else:
     print("⚠️  GEMINI_API_KEY not set — photo analysis disabled")
     print("   Get a free key: https://aistudio.google.com/app/apikey")
 
-# Fallback chain — tried in order when quota is hit.
-# Each model has an independent free-tier quota bucket.
-#   gemini-2.5-flash        → stable GA, best multimodal quality
-#   gemini-3-flash-preview  → newer generation, separate quota bucket
-#   gemini-2.5-flash-lite   → lightest, highest free-tier RPD, last resort
+# Fallback chain — tried in order when quota, truncation, or model issues hit.
+# For structured photo extraction, lighter models are preferred first because
+# they are less likely to spend output budget on internal reasoning.
 GEMINI_MODELS = [
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
     "gemini-2.5-flash",
     "gemini-3-flash-preview",
-    "gemini-2.5-flash-lite",
 ]
 
 FINISH_REASON_BY_CODE = {
@@ -100,43 +99,77 @@ session_stats = {
 
 def build_gemini_prompt() -> str:
     """
-    Builds the prompt sent to Gemini alongside the mushroom photo.
+    Builds a compact extraction prompt for the mushroom photo.
 
-    Design principles:
-    - Output format is declared FIRST (JSON schema with concrete placeholder
-      values), before any instructions. Models follow format constraints more
-      reliably when shown the schema upfront.
-    - Valid codes are listed inline per categorical field — no ambiguity.
-    - Hard closing rule ("Output ONLY the JSON object") placed last, where
-      instruction-following models weight it most strongly.
-    - No polite preamble — every token is load-bearing.
+    The response structure and allowed categorical values are enforced through
+    `response_json_schema`, so the prompt only needs the task instructions.
     """
-    cat_lines = []
-    for feature, options in FEATURE_OPTIONS.items():
-        codes = ", ".join(f'"{k}"' for k in options.keys())
-        cat_lines.append(f'    "{feature}": "x",   // one of: {codes}')
-
-    cat_block = "\n".join(cat_lines)
-
-    return f"""Output ONLY a single JSON object — no markdown, no explanation, no text outside the braces.
-
-JSON schema (fill every field):
-{{
-    "cap-diameter": 6.0,        // float, cm, range 0.2-67.0
-    "stem-height":  7.0,        // float, cm, range 0.5-35.0
-    "stem-width":   10.0,       // float, mm, range 0.5-65.0
-{cat_block}
-    "species_guess":      "Common Mushroom",
-    "species_confidence": "high",
-    "analysis_note":      "One sentence describing which visual features guided your estimate."
-}}
+    return """Analyze the mushroom photo and fill every field in the response schema.
 
 Rules:
-- Estimate numeric values from the image. Clamp to the stated range.
-- For each categorical field use ONLY one of the exact quoted codes listed.
-- If a feature is not visible, pick the most likely value for the species.
-- "species_confidence" must be exactly "high", "medium", or "low".
-- Output ONLY the JSON object. Any text outside {{ }} will break the parser."""
+- Estimate numeric values from the image and keep them within the schema ranges.
+- For categorical fields, return only one of the allowed enum codes.
+- If a feature is not visible, infer the most likely value from the visible traits.
+- Keep `analysis_note` to one short sentence.
+- Return only the schema fields."""
+
+
+def build_gemini_schema() -> dict:
+    """Builds the JSON schema used for structured Gemini responses."""
+    properties = {}
+    required = []
+
+    for feature, cfg in NUMERIC_RANGES.items():
+        properties[feature] = {
+            "type": "number",
+            "minimum": cfg["min"],
+            "maximum": cfg["max"],
+        }
+        required.append(feature)
+
+    for feature, options in FEATURE_OPTIONS.items():
+        properties[feature] = {
+            "type": "string",
+            "enum": list(options.keys()),
+        }
+        required.append(feature)
+
+    properties["species_guess"] = {"type": "string"}
+    properties["species_confidence"] = {
+        "type": "string",
+        "enum": ["high", "medium", "low"],
+    }
+    properties["analysis_note"] = {"type": "string"}
+    required.extend(["species_guess", "species_confidence", "analysis_note"])
+
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+    }
+
+
+def build_generate_config(model: str):
+    """Creates a Gemini config optimized for short structured extraction."""
+    config_kwargs = {
+        "temperature": 0.1,
+        "max_output_tokens": 512,
+        "response_mime_type": "application/json",
+        "response_json_schema": build_gemini_schema(),
+    }
+
+    # Gemini 2.5 models think by default; for this task that increases token
+    # use and can trigger MAX_TOKENS without improving extraction quality.
+    if model.startswith("gemini-2.5"):
+        config_kwargs["thinking_config"] = genai.types.ThinkingConfig(
+            thinking_budget=0
+        )
+    elif model.startswith("gemini-3"):
+        config_kwargs["thinking_config"] = genai.types.ThinkingConfig(
+            thinking_level="minimal"
+        )
+
+    return genai.types.GenerateContentConfig(**config_kwargs)
 
 
 def extract_json(raw: str) -> dict:
@@ -232,6 +265,7 @@ def call_gemini_with_fallback(prompt: str, image_part) -> tuple[str, str, dict]:
        (full_text, model_name, usage_metadata)
     """
     last_error = None
+    model_errors = []
 
     for model in GEMINI_MODELS:
         for attempt in range(3):
@@ -240,10 +274,7 @@ def call_gemini_with_fallback(prompt: str, image_part) -> tuple[str, str, dict]:
                 response = gemini_client.models.generate_content(
                     model=model,
                     contents=[prompt, image_part],
-                    config=genai.types.GenerateContentConfig(
-                        temperature=0.1,
-                        max_output_tokens=2048,
-                    ),
+                    config=build_generate_config(model),
                 )
 
                 candidates = getattr(response, "candidates", None) or []
@@ -259,7 +290,21 @@ def call_gemini_with_fallback(prompt: str, image_part) -> tuple[str, str, dict]:
 
                 finish = normalize_finish_reason(getattr(candidate, "finish_reason", None))
                 if finish == "MAX_TOKENS":
-                    raise Exception(f"MAX_TOKENS: response truncated by {model}")
+                    if full_text:
+                        try:
+                            extract_json(full_text)
+                            usage = usage_to_dict(response)
+                            with session_stats["lock"]:
+                                session_stats["total_tokens"] += usage["total"]
+                            print(f"  ⚠️  {model} hit MAX_TOKENS but returned usable JSON.")
+                            return full_text.strip(), model, usage
+                        except json.JSONDecodeError:
+                            pass
+
+                    print(f"  ⚠️  {model} hit MAX_TOKENS, trying next fallback model...")
+                    last_error = Exception(f"MAX_TOKENS: response truncated by {model}")
+                    model_errors.append(str(last_error))
+                    break
                 if not full_text:
                     finish_msg = f" (finish_reason={finish})" if finish else ""
                     raise Exception(f"{model} returned an empty response{finish_msg}")
@@ -287,9 +332,14 @@ def call_gemini_with_fallback(prompt: str, image_part) -> tuple[str, str, dict]:
                     else:
                         print(f"  ❌ {model} quota exhausted.")
                         last_error = e
+                        model_errors.append(f"{model}: {e}")
                         break
                 else:
+                    model_errors.append(f"{model}: {e}")
                     raise
+
+    if model_errors:
+        raise Exception(" | ".join(model_errors))
 
     raise last_error or Exception(
         "All Gemini models exhausted their quota. Try again later."
