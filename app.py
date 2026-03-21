@@ -22,6 +22,7 @@ import sys
 import json
 import time
 import pickle
+import subprocess
 import threading
 from typing import Optional
 import numpy as np
@@ -33,7 +34,9 @@ load_dotenv()
 
 from google import genai
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+BASE_DIR = os.path.abspath(os.path.dirname(__file__))
+SRC_DIR = os.path.join(BASE_DIR, "src")
+sys.path.insert(0, SRC_DIR)
 from preprocess import (
     NUMERIC_COLS, CATEGORICAL_COLS, ALL_FEATURE_COLS, FEATURE_OPTIONS
 )
@@ -41,20 +44,98 @@ from preprocess import (
 app = Flask(__name__)
 
 # ── Paths ─────────────────────────────────────────────────────────────────────
-MODEL_PATH    = os.path.join("models", "model.pkl")
-METADATA_PATH = os.path.join("models", "metadata.pkl")
+MODEL_PATH = os.path.join(BASE_DIR, "models", "model.pkl")
+METADATA_PATH = os.path.join(BASE_DIR, "models", "metadata.pkl")
+TRAIN_SCRIPT_PATH = os.path.join(SRC_DIR, "train_model.py")
+
+preprocessor = None
+rf_model = None
+model_lock = threading.Lock()
+model_state = {
+    "ready": False,
+    "training_attempted": False,
+    "error": None,
+}
+
+
+def load_model_bundle() -> bool:
+    """Loads the trained model bundle into memory once per process."""
+    global preprocessor, rf_model
+
+    try:
+        with open(MODEL_PATH, "rb") as f:
+            bundle = pickle.load(f)
+
+        preprocessor = bundle["preprocessor"]
+        rf_model = bundle["rf"]
+        model_state["ready"] = True
+        model_state["error"] = None
+        print("Model loaded successfully")
+        return True
+    except Exception as exc:
+        preprocessor = None
+        rf_model = None
+        model_state["ready"] = False
+        model_state["error"] = f"Failed to load model: {exc}"
+        print(f"Warning: {model_state['error']}")
+        return False
+
+
+def train_model_once() -> bool:
+    """Runs the training script once when the model file is missing."""
+    if model_state["training_attempted"]:
+        return False
+
+    model_state["training_attempted"] = True
+    print("Model not found, training...")
+
+    try:
+        subprocess.run(
+            [sys.executable, TRAIN_SCRIPT_PATH],
+            cwd=BASE_DIR,
+            check=True,
+        )
+        return True
+    except Exception as exc:
+        model_state["error"] = f"Automatic model training failed: {exc}"
+        print(f"Warning: {model_state['error']}")
+        return False
+
+
+def ensure_model_ready(train_if_missing: bool = True) -> bool:
+    """
+    Ensures the model is available in memory.
+
+    On startup the app tries to create a missing model once, then caches the
+    loaded objects in memory for later requests.
+    """
+    with model_lock:
+        if model_state["ready"] and preprocessor is not None and rf_model is not None:
+            return True
+
+        if os.path.exists(MODEL_PATH) and load_model_bundle():
+            return True
+
+        print(f"Warning: No trained model found at {MODEL_PATH}")
+        if train_if_missing and train_model_once() and os.path.exists(MODEL_PATH):
+            return load_model_bundle()
+
+        if not model_state["error"]:
+            model_state["error"] = (
+                "Model is unavailable. Automatic training did not produce "
+                "models/model.pkl."
+            )
+        return False
 
 # ── Load model ────────────────────────────────────────────────────────────────
 if not os.path.exists(MODEL_PATH):
     print("\n❌ No trained model found.")
     print("   Run this first:  python src/train_model.py\n")
-    sys.exit(1)
+    train_model_once()
 
-with open(MODEL_PATH, "rb") as f:
-    bundle = pickle.load(f)
+if os.path.exists(MODEL_PATH):
+    load_model_bundle()
 
-preprocessor = bundle["preprocessor"]
-rf_model     = bundle["rf"]
 print("✅ Model loaded (2023 Secondary Mushroom Dataset)")
 
 # ── Gemini setup ──────────────────────────────────────────────────────────────
@@ -70,6 +151,9 @@ else:
 # Fallback chain — tried in order when quota, truncation, or model issues hit.
 # For structured photo extraction, lighter models are preferred first because
 # they are less likely to spend output budget on internal reasoning.
+ensure_model_ready(train_if_missing=True)
+print("App started successfully")
+
 GEMINI_MODELS = [
     "gemini-2.5-flash-lite",
     "gemini-2.0-flash",
@@ -387,6 +471,14 @@ def raw_input_to_df(data: dict) -> pd.DataFrame:
     return pd.DataFrame([row])[ALL_FEATURE_COLS]
 
 
+def model_unavailable_response():
+    """Returns a consistent API error when prediction is not ready."""
+    message = model_state["error"] or (
+        "Model is unavailable. Wait for startup training to finish and try again."
+    )
+    return jsonify({"error": message}), 503
+
+
 # ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.route("/")
@@ -457,6 +549,9 @@ def predict():
     Runs the ColumnTransformer preprocessor + Random Forest.
     Returns prediction, confidence, and probability breakdown.
     """
+    if not ensure_model_ready(train_if_missing=False):
+        return model_unavailable_response()
+
     try:
         data = request.get_json()
 
